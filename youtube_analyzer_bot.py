@@ -9,12 +9,10 @@ import re
 import json
 import logging
 import asyncio
-import traceback
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 
 import googleapiclient.discovery
-from googleapiclient.errors import HttpError
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
@@ -57,12 +55,7 @@ TEMP_FOLDER = '/tmp/youtube_analyzer'
 os.makedirs(TEMP_FOLDER, exist_ok=True)
 
 # تهيئة YouTube API
-try:
-    youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    print("✅ YouTube API initialized successfully")
-except Exception as e:
-    print(f"❌ Failed to initialize YouTube API: {e}")
-    youtube = None
+youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
 
 # ==================== دوال المساعدة ====================
 
@@ -152,9 +145,6 @@ def clean_markdown(text):
 
 async def get_video_details(video_id):
     """تحليل فيديو يوتيوب"""
-    if not youtube:
-        return None, "YouTube API غير مهيأ بشكل صحيح"
-    
     try:
         # جلب تفاصيل الفيديو
         video_response = youtube.videos().list(
@@ -204,7 +194,7 @@ async def get_video_details(video_id):
         video_details = {
             'title': snippet['title'],
             'description': snippet.get('description', 'لا يوجد وصف')[:300] + ('...' if len(snippet.get('description', '')) > 300 else ''),
-            'published_at': snippet['publishedAt'],
+            'published_at': snippet['publishedAt'][:10],
             'channel_name': snippet['channelTitle'],
             'channel_subs': format_number(channel_stats.get('subscriberCount', 0)),
             'duration': format_duration(content_details.get('duration', '')),
@@ -217,21 +207,11 @@ async def get_video_details(video_id):
         
         return video_details, None
         
-    except HttpError as e:
-        error_details = f"خطأ في YouTube API: {e}"
-        print(error_details)
-        return None, error_details
     except Exception as e:
-        error_details = f"خطأ غير متوقع: {str(e)}"
-        print(error_details)
-        traceback.print_exc()
-        return None, error_details
+        return None, str(e)
 
 async def get_channel_details(channel_input):
     """تحليل قناة يوتيوب"""
-    if not youtube:
-        return None, "YouTube API غير مهيأ بشكل صحيح"
-    
     try:
         channel_id = None
         channel_username = None
@@ -250,34 +230,20 @@ async def get_channel_details(channel_input):
         else:
             channel_username = channel_input
         
-        print(f"🔍 Searching for channel: {channel_username or channel_id}")
-        
         # البحث عن القناة إذا كان لدينا اسم مستخدم
         if channel_username:
+            # استخدام maxResults=1 فقط لتجنب التأخير
             search_response = youtube.search().list(
                 part='snippet',
                 q=channel_username,
                 type='channel',
-                maxResults=5  # زيادة النتائج للحصول على أفضل تطابق
+                maxResults=1
             ).execute()
             
             if not search_response['items']:
                 return None, "لم يتم العثور على القناة"
             
-            # محاولة العثور على القناة العربية إذا كان الإدخال عربياً
-            if any('\u0600' <= c <= '\u06FF' for c in channel_username):
-                # البحث عن قناة باسم عربي
-                for item in search_response['items']:
-                    channel_title = item['snippet']['title']
-                    if any('\u0600' <= c <= '\u06FF' for c in channel_title):
-                        channel_id = item['snippet']['channelId']
-                        break
-                if not channel_id:
-                    channel_id = search_response['items'][0]['snippet']['channelId']
-            else:
-                channel_id = search_response['items'][0]['snippet']['channelId']
-        
-        print(f"✅ Found channel ID: {channel_id}")
+            channel_id = search_response['items'][0]['snippet']['channelId']
         
         # جلب تفاصيل القناة
         channel_response = youtube.channels().list(
@@ -303,18 +269,18 @@ async def get_channel_details(channel_input):
                 playlist_response = youtube.playlistItems().list(
                     part='snippet',
                     playlistId=uploads_playlist_id,
-                    maxResults=10
+                    maxResults=5
                 ).execute()
                 
                 for item in playlist_response.get('items', []):
                     video_snippet = item['snippet']
                     latest_videos.append({
-                        'title': video_snippet['title'][:70],
+                        'title': video_snippet['title'][:50],
                         'video_id': video_snippet['resourceId']['videoId'],
-                        'published_at': video_snippet['publishedAt']
+                        'published_at': video_snippet['publishedAt'][:10]
                     })
-            except Exception as e:
-                print(f"⚠️ Could not fetch latest videos: {e}")
+            except:
+                latest_videos = []
         
         # حساب المتوسطات
         total_views = int(statistics.get('viewCount', 0))
@@ -326,14 +292,14 @@ async def get_channel_details(channel_input):
             'title': snippet['title'],
             'description': snippet.get('description', 'لا يوجد وصف')[:200] + ('...' if len(snippet.get('description', '')) > 200 else ''),
             'custom_url': snippet.get('customUrl', 'N/A'),
-            'published_at': snippet['publishedAt'],
+            'published_at': snippet['publishedAt'][:10],
             'country': snippet.get('country', 'غير محدد'),
-            'subscribers': statistics.get('subscriberCount', 0),
-            'total_views': total_views,
-            'total_videos': total_videos,
+            'subscribers': format_number(statistics.get('subscriberCount', 0)),
+            'total_views': format_number(statistics.get('viewCount', 0)),
+            'total_videos': format_number(statistics.get('videoCount', 0)),
             'hidden_subscribers': statistics.get('hiddenSubscriberCount', False),
             'privacy_status': status.get('privacyStatus', 'غير معروف'),
-            'avg_views_per_video': avg_views_per_video,
+            'avg_views_per_video': format_number(avg_views_per_video),
             'latest_videos': latest_videos,
             'url': f"https://www.youtube.com/channel/{channel_id}",
             'channel_id': channel_id
@@ -341,15 +307,8 @@ async def get_channel_details(channel_input):
         
         return channel_details, None
         
-    except HttpError as e:
-        error_details = f"خطأ في YouTube API: {e}"
-        print(error_details)
-        return None, error_details
     except Exception as e:
-        error_details = f"خطأ غير متوقع: {str(e)}"
-        print(error_details)
-        traceback.print_exc()
-        return None, error_details
+        return None, str(e)
 
 # ==================== دوال إنشاء الملفات ====================
 
@@ -398,41 +357,35 @@ def create_channel_file(channel_details):
     
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write("="*80 + "\n")
-        f.write("📺 تقرير تحليل القناة - YouTube Channel Analysis Report\n")
+        f.write("📺 YouTube Channel Analysis Report\n")
         f.write("="*80 + "\n\n")
         
-        f.write("📺 معلومات القناة\n")
+        f.write("📺 Channel Information\n")
         f.write("-"*40 + "\n")
-        f.write(f"اسم القناة: {channel_details['title']}\n")
-        f.write(f"رابط القناة: {channel_details['url']}\n")
-        f.write(f"معرف القناة: {channel_details['channel_id']}\n")
-        f.write(f"الرابط المخصص: @{channel_details['custom_url']}\n")
-        f.write(f"تاريخ الإنشاء: {channel_details['published_at']}\n")
-        f.write(f"الدولة: {channel_details['country']}\n")
-        f.write(f"حالة الخصوصية: {channel_details['privacy_status']}\n\n")
+        f.write(f"Name: {channel_details['title']}\n")
+        f.write(f"URL: {channel_details['url']}\n")
+        f.write(f"Channel ID: {channel_details['channel_id']}\n")
+        f.write(f"Custom URL: @{channel_details['custom_url']}\n")
+        f.write(f"Created: {channel_details['published_at']}\n")
+        f.write(f"Country: {channel_details['country']}\n")
+        f.write(f"Privacy Status: {channel_details['privacy_status']}\n\n")
         
-        f.write("📊 إحصائيات القناة\n")
+        f.write("📊 Statistics:\n")
         f.write("-"*40 + "\n")
-        
         if channel_details['hidden_subscribers']:
-            f.write("عدد المشتركين: 🔒 مخفي\n")
+            f.write("Subscribers: 🔒 Hidden\n")
         else:
-            f.write(f"عدد المشتركين: {format_number(channel_details['subscribers'])}\n")
+            f.write(f"Subscribers: {channel_details['subscribers']}\n")
+        f.write(f"Total Videos: {channel_details['total_videos']}\n")
+        f.write(f"Total Views: {channel_details['total_views']}\n")
+        f.write(f"Avg Views/Video: {channel_details['avg_views_per_video']}\n\n")
         
-        f.write(f"عدد الفيديوهات: {format_number(channel_details['total_videos'])}\n")
-        f.write(f"إجمالي المشاهدات: {format_number(channel_details['total_views'])}\n")
-        f.write(f"متوسط المشاهدات لكل فيديو: {format_number(channel_details['avg_views_per_video'])}\n")
-        
-        if not channel_details['hidden_subscribers'] and channel_details['subscribers'] > 0:
-            views_per_sub = channel_details['total_views'] / channel_details['subscribers']
-            f.write(f"نسبة المشاهدات إلى المشتركين: {views_per_sub:.2f}\n\n")
-        
-        f.write("📝 وصف القناة\n")
+        f.write("📝 Description:\n")
         f.write("-"*40 + "\n")
         f.write(f"{channel_details['description']}\n\n")
         
         if channel_details['latest_videos']:
-            f.write("🆕 أحدث الفيديوهات\n")
+            f.write("🆕 Latest Videos:\n")
             f.write("-"*40 + "\n")
             for i, v in enumerate(channel_details['latest_videos'], 1):
                 f.write(f"{i}. {v['title']}\n")
@@ -446,34 +399,27 @@ def create_channel_file(channel_details):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """رسالة الترحيب"""
     welcome_text = """
-🎬 **مرحباً بك في بوت تحليل يوتيوب المتقدم!** 📊
+📊 **مرحباً بك في بوت تحليل يوتيوب المتقدم!**
 
 🔍 **ماذا يمكنني أن أفعل؟**
-✅ تحليل **أي فيديو يوتيوب** وإحصائياته الكاملة
-✅ تحليل **أي قناة يوتيوب** ومعلوماتها الشاملة
+• تحليل **أي فيديو يوتيوب** وإحصائياته الكاملة
+• تحليل **أي قناة يوتيوب** ومعلوماتها الشاملة
 
 📥 **كيف تستخدمني؟**
-• **لتحليل فيديو:** أرسل رابط الفيديو
-• **لتحليل قناة:** أرسل @اسم_القناة أو رابط القناة
+• لتحليل فيديو: أرسل رابط الفيديو
+• لتحليل قناة: أرسل @اسم_القناة أو رابط القناة
 
 ✨ **المميزات:**
-• تحليل دقيق باستخدام YouTube API الرسمي
-• عرض الإحصائيات بشكل مرتب
-• إرسال ملف نصي بالتحليل الكامل
-• دعم اللغة العربية بالكامل
+✅ تحليل دقيق باستخدام YouTube API الرسمي
+✅ عرض الإحصائيات بشكل مرتب
+✅ إرسال ملف نصي بالتحليل الكامل
+✅ دعم اللغة العربية بالكامل
 
 📌 **أمثلة:**
-`https://youtu.be/dQw4w9WgXcQ`
 `@YouTube`
-`https://youtube.com/@AlJazeera`
+`https://youtube.com/@YouTube`
 
-📊 **البوت الثالث في سلسلة بوتاتي:**
-1️⃣ @YouTube_Playlist_Extractor_bot - استخراج روابط القوائم
-2️⃣ @YouTube_Playlist2_bot - تحميل صور الفيديوهات
-3️⃣ **أنت هنا** - تحليل إحصائيات يوتيوب
-
-👨‍💻 **المطور:** @alshabany8
-🚀 **تم النشر على Render - 2026**
+👨‍💻 **مطور:** @alshabany8
 """
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
@@ -484,18 +430,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🔹 **لتحليل فيديو:**
 أرسل رابط الفيديو (YouTube, youtu.be)
-مثال: `https://youtu.be/dQw4w9WgXcQ`
 
 🔹 **لتحليل قناة:**
-• @Username (مثال: `@AlJazeera`)
-• رابط القناة (مثال: `https://youtube.com/@AlJazeera`)
+• @Username
+• رابط القناة
 
 ⚡ **ملاحظات:**
 • القنوات الكبيرة قد تستغرق وقتاً أطول
 • يتم إرسال ملف نصي بالتحليل الكامل
-• الملف يحتوي على إحصائيات مفصلة
-
-📞 **للاستفسار:** @alshabany8
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -505,23 +447,19 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔴 **بوت تحليل يوتيوب المتقدم** 🔴
 
 📊 **الإصدار:** 2.1 (بوت تلجرام)
-📅 **تاريخ الإصدار:** مارس 2026
 
-✨ **المميزات التقنية:**
-• ✅ تحليل كامل للفيديوهات (مشاهدات، إعجابات، تعليقات)
-• ✅ تحليل شامل للقنوات (مشتركين، فيديوهات، مشاهدات)
-• ✅ عرض متوسط المشاهدات والنسب المئوية
-• ✅ تصدير النتائج لملف نصي منظم
-• ✅ دعم كامل للغة العربية
-• ✅ Health Check لإبقاء البوت نشطاً
+✨ **المميزات:**
+• تحليل كامل للفيديوهات (مشاهدات، إعجابات، تعليقات)
+• تحليل شامل للقنوات (مشتركين، فيديوهات، مشاهدات)
+• عرض متوسط المشاهدات لكل فيديو
+• تصدير النتائج لملف نصي منظم
+• دعم كامل للغة العربية
 
 👨‍💻 **المطور:** Ibrahim Alshabany
 📧 **البريد:** central.app.ye@gmail.com
 📱 **إنستغرام:** @ebrahim_alshabany
 
 🚀 **تم النشر على Render مع Health Check - 2026**
-
-⭐ **إذا أعجبك البوت، شاركه مع أصدقائك!**
 """
     await update.message.reply_text(about_text, parse_mode='Markdown')
 
@@ -542,7 +480,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_details, error = await get_video_details(video_id)
         
         if error:
-            await status_msg.edit_text(f"❌ حدث خطأ: {error}\n\nيرجى المحاولة مرة أخرى لاحقاً.")
+            await status_msg.edit_text(f"❌ حدث خطأ: {error}")
             return
         
         if not video_details:
@@ -558,7 +496,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📹 **العنوان:** {clean_markdown(video_details['title'][:100])}
 👤 **القناة:** {clean_markdown(video_details['channel_name'])}
-📅 **النشر:** {video_details['published_at'][:10]}
+📅 **النشر:** {video_details['published_at']}
 ⏱️ **المدة:** {video_details['duration']}
 
 📊 **الإحصائيات:**
@@ -568,8 +506,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📺 مشتركي القناة: {video_details['channel_subs']}
 
 📝 **الوصف:** {video_details['description']}
-
-📎 **تم إرسال ملف التحليل الكامل أدناه ⬇️**
 """
         
         await status_msg.edit_text(summary, parse_mode='Markdown')
@@ -593,7 +529,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channel_details, error = await get_channel_details(channel_input)
         
         if error:
-            await status_msg.edit_text(f"❌ حدث خطأ: {error}\n\nيرجى المحاولة مرة أخرى لاحقاً.")
+            await status_msg.edit_text(f"❌ حدث خطأ: {error}")
             return
         
         if not channel_details:
@@ -604,30 +540,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filepath = create_channel_file(channel_details)
         
         # إرسال الملخص
-        subs_text = "🔒 مخفي" if channel_details['hidden_subscribers'] else format_number(channel_details['subscribers'])
+        subs_text = "🔒 مخفي" if channel_details['hidden_subscribers'] else channel_details['subscribers']
         
         summary = f"""
 ✅ **تم تحليل القناة بنجاح!**
 
 📺 **القناة:** {clean_markdown(channel_details['title'])}
 🆔 **اليوزر:** @{channel_details['custom_url']}
-📅 **الإنشاء:** {channel_details['published_at'][:10]}
+📅 **الإنشاء:** {channel_details['published_at']}
 🌍 **البلد:** {channel_details['country']}
 
 📊 **الإحصائيات:**
 👥 المشتركين: {subs_text}
-📹 عدد الفيديوهات: {format_number(channel_details['total_videos'])}
-👁️ إجمالي المشاهدات: {format_number(channel_details['total_views'])}
-📊 متوسط المشاهدات/فيديو: {format_number(channel_details['avg_views_per_video'])}
+📹 عدد الفيديوهات: {channel_details['total_videos']}
+👁️ إجمالي المشاهدات: {channel_details['total_views']}
+📊 متوسط المشاهدات/فيديو: {channel_details['avg_views_per_video']}
 
-🆕 **أحدث 5 فيديوهات:**
+📝 **الوصف:** {channel_details['description']}
+
+🆕 **أحدث الفيديوهات:**
 """
         
-        for i, v in enumerate(channel_details['latest_videos'][:5], 1):
+        for i, v in enumerate(channel_details['latest_videos'][:3], 1):
             short_title = v['title'][:50] + '...' if len(v['title']) > 50 else v['title']
             summary += f"{i}. [{clean_markdown(short_title)}](https://www.youtube.com/watch?v={v['video_id']})\n"
-        
-        summary += "\n📎 **تم إرسال ملف التحليل الكامل أدناه ⬇️**"
         
         await status_msg.edit_text(summary, parse_mode='Markdown')
         
@@ -647,10 +583,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """تشغيل البوت"""
     
-    # التحقق من YouTube API
-    if not youtube:
-        print("❌ ERROR: YouTube API not initialized. Bot will not work properly.")
-    
     # إنشاء التطبيق
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -665,8 +597,9 @@ def main():
     print("📊 YouTube Data Analyzer Bot")
     print("🤖 @YouTube_data_analyzer_bot")
     print("✅ تم إضافة أوامر /start /help /about")
-    print("✅ تم تحسين معالجة الأخطاء")
-    print("✅ تم تحسين البحث عن القنوات العربية")
+    print("✅ تم إضافة متوسط المشاهدات لكل فيديو")
+    print("✅ تم إضافة معرف القناة في الملف النصي")
+    print("✅ تم تبسيط البحث لتجنب التأخير")
     print("="*60)
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
