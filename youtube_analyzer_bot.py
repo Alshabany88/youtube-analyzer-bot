@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 YouTube Data Analyzer Bot - Telegram Version
 Analyzes YouTube videos and channels with comprehensive statistics
@@ -168,7 +168,6 @@ async def get_video_details(video_id):
         ).execute()
         
         channel_data = channel_response['items'][0] if channel_response['items'] else {}
-        channel_snippet = channel_data.get('snippet', {})
         channel_stats = channel_data.get('statistics', {})
         
         # جلب أفضل التعليقات
@@ -195,7 +194,7 @@ async def get_video_details(video_id):
         video_details = {
             'title': snippet['title'],
             'description': snippet.get('description', 'لا يوجد وصف')[:300] + ('...' if len(snippet.get('description', '')) > 300 else ''),
-            'published_at': snippet['publishedAt'][:10],
+            'published_at': snippet['publishedAt'],
             'channel_name': snippet['channelTitle'],
             'channel_subs': format_number(channel_stats.get('subscriberCount', 0)),
             'duration': format_duration(content_details.get('duration', '')),
@@ -247,7 +246,7 @@ async def get_channel_details(channel_input):
         
         # جلب تفاصيل القناة
         channel_response = youtube.channels().list(
-            part='snippet,statistics,contentDetails',
+            part='snippet,statistics,contentDetails,status',
             id=channel_id
         ).execute()
         
@@ -258,6 +257,7 @@ async def get_channel_details(channel_input):
         snippet = channel_data['snippet']
         statistics = channel_data.get('statistics', {})
         content_details = channel_data.get('contentDetails', {})
+        status = channel_data.get('status', {})
         
         # جلب أحدث الفيديوهات
         uploads_playlist_id = content_details.get('relatedPlaylists', {}).get('uploads')
@@ -267,29 +267,38 @@ async def get_channel_details(channel_input):
             playlist_response = youtube.playlistItems().list(
                 part='snippet',
                 playlistId=uploads_playlist_id,
-                maxResults=5
+                maxResults=10
             ).execute()
             
             for item in playlist_response.get('items', []):
                 video_snippet = item['snippet']
                 latest_videos.append({
-                    'title': video_snippet['title'][:50],
-                    'video_id': video_snippet['resourceId']['videoId']
+                    'title': video_snippet['title'][:70],
+                    'video_id': video_snippet['resourceId']['videoId'],
+                    'published_at': video_snippet['publishedAt']
                 })
+        
+        # حساب المتوسطات
+        total_views = int(statistics.get('viewCount', 0))
+        total_videos = int(statistics.get('videoCount', 1))
+        avg_views_per_video = total_views / total_videos if total_videos > 0 else 0
         
         # تجميع البيانات
         channel_details = {
             'title': snippet['title'],
             'description': snippet.get('description', 'لا يوجد وصف')[:200] + ('...' if len(snippet.get('description', '')) > 200 else ''),
             'custom_url': snippet.get('customUrl', 'N/A'),
-            'published_at': snippet['publishedAt'][:10],
+            'published_at': snippet['publishedAt'],
             'country': snippet.get('country', 'غير محدد'),
-            'subscribers': format_number(statistics.get('subscriberCount', 0)),
-            'total_views': format_number(statistics.get('viewCount', 0)),
-            'total_videos': format_number(statistics.get('videoCount', 0)),
+            'subscribers': statistics.get('subscriberCount', 0),
+            'total_views': total_views,
+            'total_videos': total_videos,
             'hidden_subscribers': statistics.get('hiddenSubscriberCount', False),
+            'privacy_status': status.get('privacyStatus', 'غير معروف'),
+            'avg_views_per_video': avg_views_per_video,
             'latest_videos': latest_videos,
-            'url': f"https://www.youtube.com/channel/{channel_id}"
+            'url': f"https://www.youtube.com/channel/{channel_id}",
+            'channel_id': channel_id
         }
         
         return channel_details, None
@@ -343,35 +352,47 @@ def create_channel_file(channel_details):
     filepath = os.path.join(TEMP_FOLDER, filename)
     
     with open(filepath, 'w', encoding='utf-8') as f:
-        f.write("="*60 + "\n")
-        f.write("📺 YouTube Channel Analysis Report\n")
-        f.write("="*60 + "\n\n")
+        f.write("="*80 + "\n")
+        f.write("📺 تقرير تحليل القناة - YouTube Channel Analysis Report\n")
+        f.write("="*80 + "\n\n")
         
-        f.write(f"📺 Channel: {channel_details['title']}\n")
-        f.write(f"🔗 URL: {channel_details['url']}\n")
-        f.write(f"🆔 Custom URL: @{channel_details['custom_url']}\n")
-        f.write(f"📅 Created: {channel_details['published_at']}\n")
-        f.write(f"🌍 Country: {channel_details['country']}\n\n")
-        
-        f.write("📊 Statistics:\n")
+        f.write("📺 معلومات القناة\n")
         f.write("-"*40 + "\n")
-        if channel_details['hidden_subscribers']:
-            f.write("👥 Subscribers: 🔒 Hidden\n")
-        else:
-            f.write(f"👥 Subscribers: {channel_details['subscribers']}\n")
-        f.write(f"📹 Total Videos: {channel_details['total_videos']}\n")
-        f.write(f"👁️ Total Views: {channel_details['total_views']}\n\n")
+        f.write(f"اسم القناة: {channel_details['title']}\n")
+        f.write(f"رابط القناة: {channel_details['url']}\n")
+        f.write(f"معرف القناة: {channel_details['channel_id']}\n")
+        f.write(f"الرابط المخصص: @{channel_details['custom_url']}\n")
+        f.write(f"تاريخ الإنشاء: {channel_details['published_at']}\n")
+        f.write(f"الدولة: {channel_details['country']}\n")
+        f.write(f"حالة الخصوصية: {channel_details['privacy_status']}\n\n")
         
-        f.write("📝 Description:\n")
+        f.write("📊 إحصائيات القناة\n")
+        f.write("-"*40 + "\n")
+        
+        if channel_details['hidden_subscribers']:
+            f.write("عدد المشتركين: 🔒 مخفي\n")
+        else:
+            f.write(f"عدد المشتركين: {format_number(channel_details['subscribers'])}\n")
+        
+        f.write(f"عدد الفيديوهات: {format_number(channel_details['total_videos'])}\n")
+        f.write(f"إجمالي المشاهدات: {format_number(channel_details['total_views'])}\n")
+        f.write(f"متوسط المشاهدات لكل فيديو: {format_number(channel_details['avg_views_per_video'])}\n")
+        
+        if not channel_details['hidden_subscribers'] and channel_details['subscribers'] > 0:
+            views_per_sub = channel_details['total_views'] / channel_details['subscribers']
+            f.write(f"نسبة المشاهدات إلى المشتركين: {views_per_sub:.2f}\n\n")
+        
+        f.write("📝 وصف القناة\n")
         f.write("-"*40 + "\n")
         f.write(f"{channel_details['description']}\n\n")
         
         if channel_details['latest_videos']:
-            f.write("🆕 Latest Videos:\n")
+            f.write("🆕 أحدث الفيديوهات\n")
             f.write("-"*40 + "\n")
             for i, v in enumerate(channel_details['latest_videos'], 1):
                 f.write(f"{i}. {v['title']}\n")
-                f.write(f"   https://www.youtube.com/watch?v={v['video_id']}\n\n")
+                f.write(f"   https://www.youtube.com/watch?v={v['video_id']}\n")
+                f.write(f"   📅 {v['published_at']}\n\n")
     
     return filepath
 
@@ -380,28 +401,34 @@ def create_channel_file(channel_details):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """رسالة الترحيب"""
     welcome_text = """
-📊 **مرحباً بك في بوت تحليل يوتيوب المتقدم!**
+🎬 **مرحباً بك في بوت تحليل يوتيوب المتقدم!** 📊
 
 🔍 **ماذا يمكنني أن أفعل؟**
-• تحليل **أي فيديو يوتيوب** وإحصائياته الكاملة
-• تحليل **أي قناة يوتيوب** ومعلوماتها الشاملة
+✅ تحليل **أي فيديو يوتيوب** وإحصائياته الكاملة
+✅ تحليل **أي قناة يوتيوب** ومعلوماتها الشاملة
 
 📥 **كيف تستخدمني؟**
-• لتحليل فيديو: أرسل رابط الفيديو
-• لتحليل قناة: أرسل @اسم_القناة أو رابط القناة
+• **لتحليل فيديو:** أرسل رابط الفيديو
+• **لتحليل قناة:** أرسل @اسم_القناة أو رابط القناة
 
 ✨ **المميزات:**
-✅ تحليل دقيق باستخدام YouTube API الرسمي
-✅ عرض الإحصائيات بشكل مرتب
-✅ إرسال ملف نصي بالتحليل الكامل
-✅ دعم اللغة العربية بالكامل
+• تحليل دقيق باستخدام YouTube API الرسمي
+• عرض الإحصائيات بشكل مرتب
+• إرسال ملف نصي بالتحليل الكامل
+• دعم اللغة العربية بالكامل
 
 📌 **أمثلة:**
 `https://youtu.be/dQw4w9WgXcQ`
 `@YouTube`
-`https://youtube.com/@YouTube`
+`https://youtube.com/@AlJazeera`
 
-👨‍💻 **مطور:** @alshabany8
+📊 **البوت الثالث في سلسلة بوتاتي:**
+1️⃣ @YouTube_Playlist_Extractor_bot - استخراج روابط القوائم
+2️⃣ @YouTube_Playlist2_bot - تحميل صور الفيديوهات
+3️⃣ **أنت هنا** - تحليل إحصائيات يوتيوب
+
+👨‍💻 **المطور:** @alshabany8
+🚀 **تم النشر على Render - 2026**
 """
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
@@ -412,14 +439,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🔹 **لتحليل فيديو:**
 أرسل رابط الفيديو (YouTube, youtu.be)
+مثال: `https://youtu.be/dQw4w9WgXcQ`
 
 🔹 **لتحليل قناة:**
-• @Username
-• رابط القناة
+• @Username (مثال: `@AlJazeera`)
+• رابط القناة (مثال: `https://youtube.com/@AlJazeera`)
 
 ⚡ **ملاحظات:**
 • القنوات الكبيرة قد تستغرق وقتاً أطول
 • يتم إرسال ملف نصي بالتحليل الكامل
+• الملف يحتوي على إحصائيات مفصلة
+
+📞 **للاستفسار:** @alshabany8
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -429,18 +460,23 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔴 **بوت تحليل يوتيوب المتقدم** 🔴
 
 📊 **الإصدار:** 2.0 (بوت تلجرام)
+📅 **تاريخ الإصدار:** مارس 2026
 
-✨ **المميزات:**
-• تحليل كامل للفيديوهات
-• تحليل شامل للقنوات
-• إحصائيات دقيقة
-• تصدير النتائج لملف نصي
+✨ **المميزات التقنية:**
+• ✅ تحليل كامل للفيديوهات (مشاهدات، إعجابات، تعليقات)
+• ✅ تحليل شامل للقنوات (مشتركين، فيديوهات، مشاهدات)
+• ✅ عرض متوسط المشاهدات والنسب المئوية
+• ✅ تصدير النتائج لملف نصي منظم
+• ✅ دعم كامل للغة العربية
+• ✅ Health Check لإبقاء البوت نشطاً
 
 👨‍💻 **المطور:** Ibrahim Alshabany
 📧 **البريد:** central.app.ye@gmail.com
 📱 **إنستغرام:** @ebrahim_alshabany
 
-🚀 **تم النشر على Render - 2026**
+🚀 **تم النشر على Render مع Health Check - 2026**
+
+⭐ **إذا أعجبك البوت، شاركه مع أصدقائك!**
 """
     await update.message.reply_text(about_text, parse_mode='Markdown')
 
@@ -477,7 +513,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📹 **العنوان:** {clean_markdown(video_details['title'][:100])}
 👤 **القناة:** {clean_markdown(video_details['channel_name'])}
-📅 **النشر:** {video_details['published_at']}
+📅 **النشر:** {video_details['published_at'][:10]}
 ⏱️ **المدة:** {video_details['duration']}
 
 📊 **الإحصائيات:**
@@ -487,6 +523,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📺 مشتركي القناة: {video_details['channel_subs']}
 
 📝 **الوصف:** {video_details['description']}
+
+📎 **تم إرسال ملف التحليل الكامل أدناه ⬇️**
 """
         
         await status_msg.edit_text(summary, parse_mode='Markdown')
@@ -521,28 +559,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filepath = create_channel_file(channel_details)
         
         # إرسال الملخص
-        subs_text = "🔒 مخفي" if channel_details['hidden_subscribers'] else channel_details['subscribers']
+        subs_text = "🔒 مخفي" if channel_details['hidden_subscribers'] else format_number(channel_details['subscribers'])
         
         summary = f"""
 ✅ **تم تحليل القناة بنجاح!**
 
 📺 **القناة:** {clean_markdown(channel_details['title'])}
 🆔 **اليوزر:** @{channel_details['custom_url']}
-📅 **الإنشاء:** {channel_details['published_at']}
+📅 **الإنشاء:** {channel_details['published_at'][:10]}
 🌍 **البلد:** {channel_details['country']}
 
 📊 **الإحصائيات:**
 👥 المشتركين: {subs_text}
-📹 عدد الفيديوهات: {channel_details['total_videos']}
-👁️ إجمالي المشاهدات: {channel_details['total_views']}
-
-📝 **الوصف:** {channel_details['description']}
+📹 عدد الفيديوهات: {format_number(channel_details['total_videos'])}
+👁️ إجمالي المشاهدات: {format_number(channel_details['total_views'])}
+📊 متوسط المشاهدات/فيديو: {format_number(channel_details['avg_views_per_video'])}
 
 🆕 **أحدث الفيديوهات:**
 """
         
-        for i, v in enumerate(channel_details['latest_videos'][:3], 1):
-            summary += f"{i}. [{v['title']}](https://www.youtube.com/watch?v={v['video_id']})\n"
+        for i, v in enumerate(channel_details['latest_videos'][:5], 1):
+            summary += f"{i}. [{v['title'][:50]}...](https://www.youtube.com/watch?v={v['video_id']})\n"
+        
+        summary += "\n📎 **تم إرسال ملف التحليل الكامل أدناه ⬇️**"
         
         await status_msg.edit_text(summary, parse_mode='Markdown')
         
@@ -575,6 +614,7 @@ def main():
     print("="*60)
     print("📊 YouTube Data Analyzer Bot")
     print("🤖 @YouTube_data_analyzer_bot")
+    print("✅ تم إضافة أوامر /start /help /about")
     print("✅ يعمل على Render مع Health Check")
     print("="*60)
     
